@@ -9,6 +9,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐾</text></svg>">
+    <!-- MQTT client library -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 </head>
 <body>
 
@@ -21,9 +23,9 @@
             <h1 class="setup-title">PetFeeder</h1>
             <p class="setup-subtitle">Conectează-te la hrănitorul tău inteligent</p>
             <div class="setup-form">
-                <label class="input-label" for="esp-ip">Adresa IP a plăcuței ESP32</label>
-                <input type="text" id="esp-ip" class="apple-input" placeholder="ex: 192.168.1.100" autocomplete="off">
-                <p class="setup-hint">Găsești IP-ul în Serial Monitor din VS Code</p>
+                <label class="input-label" for="esp-ip">ID Dispozitiv (Device ID)</label>
+                <input type="text" id="esp-ip" class="apple-input" value="petfeeder-cr7lm10db7-8f9a" placeholder="ex: petfeeder-cr7lm10db7-8f9a" autocomplete="off">
+                <p class="setup-hint">ID-ul unic preconfigurat pentru hrănitorul tău inteligent</p>
                 <button id="connect-btn" class="apple-btn apple-btn-primary apple-btn-large" onclick="connectToESP()">
                     Conectează
                 </button>
@@ -198,7 +200,7 @@
                 </div>
                 <div class="device-info">
                     <div class="device-row">
-                        <span>IP Adresă</span>
+                        <span>ID Dispozitiv</span>
                         <span id="device-ip">—</span>
                     </div>
                     <div class="device-row">

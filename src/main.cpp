@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESP32Servo.h>
-#include <WebServer.h>
+#include <PubSubClient.h>
 #include <WiFi.h>
 #include <time.h>
 #include <Wire.h>
@@ -60,7 +60,26 @@ struct FeedSchedule {
 // ══════════════════════════════════════════════════
 //  🌐 OBIECTE GLOBALE
 // ══════════════════════════════════════════════════
-WebServer server(80);
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// Configuration MQTT
+const char *MQTT_SERVER = "broker.hivemq.com";
+const uint16_t MQTT_PORT = 1883;
+const char *MQTT_CLIENT_ID = "petfeeder-cr7lm10db7-8f9a";
+
+// Topics MQTT
+const char *TOPIC_CONTROL = "petfeeder-cr7lm10db7-8f9a/control";
+const char *TOPIC_STATUS = "petfeeder-cr7lm10db7-8f9a/status";
+const char *TOPIC_HISTORY = "petfeeder-cr7lm10db7-8f9a/history";
+const char *TOPIC_SCHEDULE = "petfeeder-cr7lm10db7-8f9a/schedule";
+
+// Forward declarations
+void publishStatus();
+void publishHistory();
+void publishSchedules();
+void triggerErrorAlert();
+
 Servo feedServo;
 
 // State
@@ -88,16 +107,7 @@ String lastFeedTime = "-"; // Aici salvăm ora pentru ecran
 // ══════════════════════════════════════════════════
 //  🛠️ FUNCȚII HELPER
 // ══════════════════════════════════════════════════
-void sendCORS() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-}
 
-void handleOptions() {
-  sendCORS();
-  server.send(204);
-}
 
 String getTimeString() {
   struct tm t;
@@ -187,6 +197,8 @@ void doFeed(const char *method) {
   addHistory(method);
   feedCount++;
   updateLCD(); // Actualizează ecranul instant când primește mâncare
+  publishStatus();
+  publishHistory();
 }
 
 void updateLEDs() {
@@ -233,11 +245,9 @@ void checkSchedules() {
 }
 
 // ══════════════════════════════════════════════════
-//  🌐 API HANDLERS
+//  🌐 MQTT PUBLISHERS & HANDLERS
 // ══════════════════════════════════════════════════
-void handleStatus() {
-  sendCORS();
-
+void publishStatus() {
   JsonDocument doc;
   doc["connected"] = true;
   doc["foodLevel"] = round(foodLevel * 10) / 10.0;
@@ -253,42 +263,10 @@ void handleStatus() {
 
   String json;
   serializeJson(doc, json);
-  server.send(200, "application/json", json);
+  mqttClient.publish(TOPIC_STATUS, json.c_str(), true); // retained
 }
 
-void handleFeed() {
-  sendCORS();
-
-  if (foodLevel <= 30) {
-    server.send(200, "application/json", "{\"success\":false,\"message\":\"Eroare: Rezervor gol!\"}");
-    return;
-  }
-
-  doFeed("manual");
-  server.send(200, "application/json",
-              "{\"success\":true,\"message\":\"Hranire completa!\"}");
-}
-
-void handleBuzzer() {
-  sendCORS();
-  buzzerEnabled = !buzzerEnabled;
-  String json =
-      "{\"buzzerEnabled\":" + String(buzzerEnabled ? "true" : "false") + "}";
-  server.send(200, "application/json", json);
-}
-
-void handleAutoFeed() {
-  sendCORS();
-  autoFeedEnabled = !autoFeedEnabled;
-  JsonDocument doc;
-  doc["autoFeedEnabled"] = autoFeedEnabled;
-  String json;
-  serializeJson(doc, json);
-  server.send(200, "application/json", json);
-}
-
-void handleGetHistory() {
-  sendCORS();
+void publishHistory() {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   int count = min(historyTotal, MAX_HISTORY);
@@ -298,13 +276,13 @@ void handleGetHistory() {
     obj["time"] = feedHistory[idx].timestamp;
     obj["method"] = feedHistory[idx].method;
   }
+
   String json;
   serializeJson(doc, json);
-  server.send(200, "application/json", json);
+  mqttClient.publish(TOPIC_HISTORY, json.c_str(), true); // retained
 }
 
-void handleGetSchedules() {
-  sendCORS();
+void publishSchedules() {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < scheduleCount; i++) {
@@ -313,71 +291,106 @@ void handleGetSchedules() {
     obj["minute"] = schedules[i].minute;
     obj["enabled"] = schedules[i].enabled;
   }
+
   String json;
   serializeJson(doc, json);
-  server.send(200, "application/json", json);
+  mqttClient.publish(TOPIC_SCHEDULE, json.c_str(), true); // retained
 }
 
-void handlePostSchedule() {
-  sendCORS();
-  if (!server.hasArg("plain")) {
-    server.send(400, "application/json", "{\"error\":\"No body\"}");
-    return;
-  }
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.println(topic);
+
+  // Buffer payload
+  char message[length + 1];
+  memcpy(message, payload, length);
+  message[length] = '\0';
+  Serial.print("Payload: ");
+  Serial.println(message);
+
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-
-  if (scheduleCount >= MAX_SCHEDULES) {
-    server.send(400, "application/json", "{\"error\":\"Maximum 5 programe\"}");
+  DeserializationError error = deserializeJson(doc, message);
+  if (error) {
+    Serial.print("JSON Deserialization failed: ");
+    Serial.println(error.c_str());
     return;
   }
 
-  schedules[scheduleCount].hour = doc["hour"];
-  schedules[scheduleCount].minute = doc["minute"];
-  schedules[scheduleCount].enabled = doc["enabled"] | true;
-  schedules[scheduleCount].firedToday = false;
-  scheduleCount++;
+  const char *command = doc["command"];
+  if (command == nullptr) return;
 
-  server.send(200, "application/json", "{\"success\":true}");
+  if (strcmp(command, "feed") == 0) {
+    if (foodLevel <= 30) {
+      triggerErrorAlert();
+      Serial.println("⚠️ Alertă: Nu se poate hrăni manual, nivelul de mâncare este prea scăzut!");
+    } else {
+      doFeed("manual");
+    }
+    publishStatus();
+  } 
+  else if (strcmp(command, "toggle_buzzer") == 0) {
+    buzzerEnabled = !buzzerEnabled;
+    publishStatus();
+  } 
+  else if (strcmp(command, "toggle_autofeed") == 0) {
+    autoFeedEnabled = !autoFeedEnabled;
+    publishStatus();
+  } 
+  else if (strcmp(command, "add_schedule") == 0) {
+    if (scheduleCount < MAX_SCHEDULES) {
+      schedules[scheduleCount].hour = doc["hour"];
+      schedules[scheduleCount].minute = doc["minute"];
+      schedules[scheduleCount].enabled = doc["enabled"] | true;
+      schedules[scheduleCount].firedToday = false;
+      scheduleCount++;
+      publishSchedules();
+    }
+  } 
+  else if (strcmp(command, "delete_schedule") == 0) {
+    int idx = doc["index"];
+    if (idx >= 0 && idx < scheduleCount) {
+      for (int i = idx; i < scheduleCount - 1; i++) {
+        schedules[i] = schedules[i + 1];
+      }
+      scheduleCount--;
+      publishSchedules();
+    }
+  } 
+  else if (strcmp(command, "toggle_schedule") == 0) {
+    int idx = doc["index"];
+    if (idx >= 0 && idx < scheduleCount) {
+      schedules[idx].enabled = !schedules[idx].enabled;
+      publishSchedules();
+    }
+  } 
+  else if (strcmp(command, "request_sync") == 0) {
+    publishStatus();
+    publishHistory();
+    publishSchedules();
+  }
 }
 
-void handleDeleteSchedule() {
-  sendCORS();
-  if (!server.hasArg("plain")) {
-    server.send(400, "application/json", "{\"error\":\"No body\"}");
-    return;
+void connectMQTT() {
+  static unsigned long lastReconnectAttempt = 0;
+  if (!mqttClient.connected()) {
+    unsigned long now = millis();
+    if (now - lastReconnectAttempt > 5000 || lastReconnectAttempt == 0) {
+      lastReconnectAttempt = now;
+      Serial.print("Attempting MQTT connection to ");
+      Serial.print(MQTT_SERVER);
+      Serial.print("...");
+      if (mqttClient.connect(MQTT_CLIENT_ID)) {
+        Serial.println("connected");
+        mqttClient.subscribe(TOPIC_CONTROL);
+        publishStatus();
+        publishHistory();
+        publishSchedules();
+      } else {
+        Serial.print("failed, rc=");
+        Serial.println(mqttClient.state());
+      }
+    }
   }
-  JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-  int idx = doc["index"];
-
-  if (idx < 0 || idx >= scheduleCount) {
-    server.send(400, "application/json", "{\"error\":\"Invalid index\"}");
-    return;
-  }
-
-  // Shift schedules down
-  for (int i = idx; i < scheduleCount - 1; i++)
-    schedules[i] = schedules[i + 1];
-  scheduleCount--;
-
-  server.send(200, "application/json", "{\"success\":true}");
-}
-
-void handleToggleSchedule() {
-  sendCORS();
-  if (!server.hasArg("plain")) {
-    server.send(400, "application/json", "{\"error\":\"No body\"}");
-    return;
-  }
-  JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-  int idx = doc["index"];
-
-  if (idx >= 0 && idx < scheduleCount) {
-    schedules[idx].enabled = !schedules[idx].enabled;
-  }
-  server.send(200, "application/json", "{\"success\":true}");
 }
 
 // ══════════════════════════════════════════════════
@@ -438,27 +451,14 @@ void setup() {
   // NTP
   configTime(GMT_OFFSET, DST_OFFSET, NTP_SERVER);
 
-  // ── Rute API ──
-  server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/api/feed", HTTP_POST, handleFeed);
-  server.on("/api/feed", HTTP_OPTIONS, handleOptions);
-  server.on("/api/buzzer", HTTP_POST, handleBuzzer);
-  server.on("/api/buzzer", HTTP_OPTIONS, handleOptions);
-  server.on("/api/autofeed", HTTP_POST, handleAutoFeed);
-  server.on("/api/autofeed", HTTP_OPTIONS, handleOptions);
-  server.on("/api/history", HTTP_GET, handleGetHistory);
-  server.on("/api/schedule", HTTP_GET, handleGetSchedules);
-  server.on("/api/schedule", HTTP_POST, handlePostSchedule);
-  server.on("/api/schedule", HTTP_OPTIONS, handleOptions);
-  server.on("/api/schedule/delete", HTTP_POST, handleDeleteSchedule);
-  server.on("/api/schedule/delete", HTTP_OPTIONS, handleOptions);
-  server.on("/api/schedule/toggle", HTTP_POST, handleToggleSchedule);
-  server.on("/api/schedule/toggle", HTTP_OPTIONS, handleOptions);
+  // ── Configurare MQTT ──
+  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(1500); // Mărim buffer-ul pentru istoricul JSON
 
-  server.begin();
-  Serial.println("🚀 Web server pornit pe portul 80!");
+  Serial.println("🚀 Configurare MQTT finalizată!");
   Serial.println("═══════════════════════════════════");
-  Serial.println("Deschide website-ul și introdu IP-ul de sus.");
+  Serial.printf("Abonat la topicul: %s\n", TOPIC_CONTROL);
   Serial.println("═══════════════════════════════════");
 
   foodLevel = measureFoodLevel();
@@ -475,6 +475,7 @@ void triggerErrorAlert() {
       delay(100);                     // Sunet foarte scurt
       digitalWrite(BUZZER_PIN, HIGH); // OPRIT
       delay(100);                     // Pauză scurtă între bipuri
+      publishStatus(); // actualizează status instant
     }
   }
 }
@@ -483,7 +484,8 @@ void triggerErrorAlert() {
 //  🔄 LOOP
 // ══════════════════════════════════════════════════
 void loop() {
-  server.handleClient();
+  connectMQTT();
+  mqttClient.loop();
 
   static unsigned long lastAutoFeedTime = 0;
   static bool lastPetDetected = false;
@@ -496,6 +498,7 @@ void loop() {
     petDetected = checkPetSensor();
     updateLEDs();
     updateLCD();
+    publishStatus(); // Trimite status nou pe MQTT la fiecare 2s
 
    if (autoFeedEnabled && petDetected && !lastPetDetected) {
       

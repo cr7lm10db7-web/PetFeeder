@@ -1,0 +1,12 @@
+{
+  "name": "petfeeder-simulator",
+  "version": "1.0.0",
+  "description": "Mock ESP32 simulator and static web server for PetFeeder",
+  "main": "server.js",
+  "dependencies": {
+    "mqtt": "^5.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

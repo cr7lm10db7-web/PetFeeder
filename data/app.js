@@ -1,39 +1,35 @@
-/* ═══════════════════════════════════════════
-   🐾 PetFeeder — App Logic
-   ═══════════════════════════════════════════ */
-
-let ESP_IP = localStorage.getItem('esp_ip') || '';
-let pollInterval = null;
+let DEVICE_ID = localStorage.getItem('device_id') || 'petfeeder-cr7lm10db7-8f9a';
+let mqttClient = null;
 let selectedEmoji = '🐱';
 let lastFeedCount = -1;
 
 // ─── Init ───
 window.addEventListener('DOMContentLoaded', () => {
     loadPetProfile();
-    if (ESP_IP) {
+    if (DEVICE_ID) {
         showDashboard();
-        startPolling();
+        startMQTT();
     }
 });
 
 // ─── Connection ───
 function connectToESP() {
     const input = document.getElementById('esp-ip');
-    const ip = input.value.trim();
-    if (!ip) { input.focus(); return; }
+    const id = input.value.trim();
+    if (!id) { input.focus(); return; }
 
-    ESP_IP = ip.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    localStorage.setItem('esp_ip', ESP_IP);
+    DEVICE_ID = id;
+    localStorage.setItem('device_id', DEVICE_ID);
 
     showDashboard();
-    startPolling();
+    startMQTT();
     showToast('Conectare în curs...');
 }
 
 function disconnect() {
-    stopPolling();
-    localStorage.removeItem('esp_ip');
-    ESP_IP = '';
+    stopMQTT();
+    localStorage.removeItem('device_id');
+    DEVICE_ID = '';
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('setup-screen').classList.remove('hidden');
     showToast('Deconectat');
@@ -42,56 +38,88 @@ function disconnect() {
 function showDashboard() {
     document.getElementById('setup-screen').classList.add('hidden');
     document.getElementById('dashboard').classList.remove('hidden');
-    document.getElementById('device-ip').textContent = ESP_IP;
+    document.getElementById('device-ip').textContent = DEVICE_ID;
 }
 
-// ─── API Calls ───
-async function apiGet(endpoint) {
-    try {
-        const res = await fetch(`http://${ESP_IP}${endpoint}`, { signal: AbortSignal.timeout(4000) });
-        if (!res.ok) throw new Error(res.statusText);
-        return await res.json();
-    } catch (e) {
-        console.warn('API GET error:', e.message);
-        return null;
-    }
-}
+// ─── MQTT Communication ───
+function startMQTT() {
+    stopMQTT();
+    setOnline(false);
 
-async function apiPost(endpoint, body = {}) {
-    try {
-        const res = await fetch(`http://${ESP_IP}${endpoint}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(6000)
-        });
-        if (!res.ok) throw new Error(res.statusText);
-        return await res.json();
-    } catch (e) {
-        console.warn('API POST error:', e.message);
-        return null;
-    }
-}
+    // Conectare la brokerul public HiveMQ prin WebSockets securizate (port 8884)
+    const brokerUrl = 'wss://broker.hivemq.com:8884/mqtt';
+    console.log('[MQTT] Conectare la broker:', brokerUrl, 'cu ID-ul:', DEVICE_ID);
+    
+    mqttClient = mqtt.connect(brokerUrl, {
+        clientId: 'web-' + Math.random().toString(16).substr(2, 8),
+        keepalive: 60,
+        reconnectPeriod: 3000
+    });
 
-// ─── Polling ───
-function startPolling() {
-    fetchStatus();
-    fetchHistory();
-    fetchSchedules();
-    pollInterval = setInterval(fetchStatus, 1500);
-}
+    mqttClient.on('connect', () => {
+        console.log('[MQTT] Conectat cu succes!');
+        setOnline(true);
 
-function stopPolling() {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-}
+        // Abonare la topicuri pentru a primi date de la ESP32
+        mqttClient.subscribe(`${DEVICE_ID}/status`);
+        mqttClient.subscribe(`${DEVICE_ID}/history`);
+        mqttClient.subscribe(`${DEVICE_ID}/schedule`);
 
-async function fetchStatus() {
-    const data = await apiGet('/api/status');
-    if (!data) {
+        // Cere sincronizare initiala imediat după conectare
+        mqttPublish('request_sync');
+    });
+
+    mqttClient.on('close', () => {
+        console.log('[MQTT] Conexiune închisă');
         setOnline(false);
-        return;
+    });
+
+    mqttClient.on('error', (err) => {
+        console.error('[MQTT] Eroare:', err);
+        setOnline(false);
+    });
+
+    mqttClient.on('message', (topic, payload) => {
+        const messageStr = payload.toString();
+        
+        try {
+            const data = JSON.parse(messageStr);
+            if (topic.endsWith('/status')) {
+                handleStatusMessage(data);
+            } else if (topic.endsWith('/history')) {
+                renderHistory(data);
+            } else if (topic.endsWith('/schedule')) {
+                renderSchedules(data);
+            }
+        } catch (e) {
+            console.warn('[MQTT] Eroare parsare payload JSON:', e);
+        }
+    });
+}
+
+function stopMQTT() {
+    if (mqttClient) {
+        try {
+            mqttClient.end();
+            console.log('[MQTT] Client oprit');
+        } catch (e) {}
+        mqttClient = null;
     }
-    setOnline(true);
+}
+
+function mqttPublish(commandName, extraArgs = {}) {
+    if (!mqttClient || !mqttClient.connected) {
+        showToast('Eroare: Deconectat de la broker!');
+        return false;
+    }
+    const topic = `${DEVICE_ID}/control`;
+    const payload = JSON.stringify({ command: commandName, ...extraArgs });
+    mqttClient.publish(topic, payload);
+    console.log(`[MQTT] Publicat pe ${topic}:`, payload);
+    return true;
+}
+
+function handleStatusMessage(data) {
     updateFoodLevel(data.foodLevel);
     updateDetection(data.petDetected);
     updateBuzzer(data.buzzerEnabled);
@@ -99,20 +127,9 @@ async function fetchStatus() {
     updateLEDs(data);
     updateDeviceInfo(data);
 
-    // Afișează eroarea de la senzor/hrănire dacă există
     if (data.lastError) {
         showToast(data.lastError);
     }
-}
-
-async function fetchHistory() {
-    const data = await apiGet('/api/history');
-    if (data) renderHistory(data);
-}
-
-async function fetchSchedules() {
-    const data = await apiGet('/api/schedule');
-    if (data) renderSchedules(data);
 }
 
 // ─── UI Updates ───
@@ -168,7 +185,6 @@ function updateLEDs(data) {
     const y = document.getElementById('led-yellow');
     const r = document.getElementById('led-red');
 
-    // Folosim starea reală trimisă de ESP32
     g.classList.toggle('active', data.ledGreen === true);
     y.classList.toggle('active', data.ledYellow === true);
     r.classList.toggle('active', data.ledRed === true);
@@ -179,10 +195,6 @@ function updateDeviceInfo(data) {
     document.getElementById('device-feed-count').textContent = data.feedCount || 0;
     document.getElementById('device-time').textContent = data.time || '—';
 
-    // Dacă feedCount a crescut (hrănire de la senzor), actualizăm automat istoricul
-    if (lastFeedCount !== -1 && data.feedCount > lastFeedCount) {
-        fetchHistory();
-    }
     lastFeedCount = data.feedCount;
 }
 
@@ -194,42 +206,32 @@ function formatUptime(seconds) {
 }
 
 // ─── Actions ───
-async function feedNow() {
+function feedNow() {
     const btn = document.getElementById('feed-btn');
+    if (btn.classList.contains('feeding')) return;
+
     btn.classList.add('feeding');
     btn.querySelector('.feed-label').textContent = 'Se hrănește...';
 
-    const result = await apiPost('/api/feed');
+    const success = mqttPublish('feed');
 
-    setTimeout(async () => {
+    setTimeout(() => {
         btn.classList.remove('feeding');
         btn.querySelector('.feed-label').textContent = 'Hrănește Acum';
-        if (result && result.success) {
-            showToast('✅ Hrănire completă!');
-            document.getElementById('last-feed-text').textContent = 'Tocmai acum';
-        } else if (result && !result.success) {
-            showToast(result.message || '⛔ Hrănire blocată');
+        if (success) {
+            showToast('🍽️ Comandă de hrănire trimisă!');
         } else {
-            showToast('❌ Eroare de conexiune');
+            showToast('❌ Eroare trimitere comandă');
         }
-        // Așteptăm suficient ca ESP32 să termine doFeed, apoi actualizăm
-        await fetchStatus();
-        await fetchHistory();
     }, 2500);
 }
 
-async function toggleBuzzer() {
-    const result = await apiPost('/api/buzzer');
-    if (result) {
-        showToast(result.buzzerEnabled ? '🔔 Alertă activată' : '🔕 Alertă dezactivată');
-    }
+function toggleBuzzer() {
+    mqttPublish('toggle_buzzer');
 }
 
-async function toggleAutoFeed() {
-    const result = await apiPost('/api/autofeed');
-    if (result) {
-        showToast(result.autoFeedEnabled ? '🤖 Senzor hrănire ACTIVAT' : '🚫 Senzor hrănire DEZACTIVAT');
-    }
+function toggleAutoFeed() {
+    mqttPublish('toggle_autofeed');
 }
 
 // ─── Schedule ───
@@ -238,30 +240,28 @@ function addSchedule() {
     document.getElementById('schedule-modal').classList.remove('hidden');
 }
 
-async function saveSchedule() {
+function saveSchedule() {
     const time = document.getElementById('schedule-time').value;
     if (!time) return;
     const [hour, minute] = time.split(':').map(Number);
 
-    const result = await apiPost('/api/schedule', { hour, minute, enabled: true });
+    const success = mqttPublish('add_schedule', { hour, minute, enabled: true });
     closeModalById('schedule-modal');
-    if (result) {
-        showToast('⏰ Program adăugat: ' + time);
-        fetchSchedules();
+    if (success) {
+        showToast('⏰ Trimitere program: ' + time);
     }
 }
 
-async function deleteSchedule(index) {
-    const result = await apiPost('/api/schedule/delete', { index });
-    if (result) {
-        showToast('Program șters');
-        fetchSchedules();
+function deleteSchedule(index) {
+    const success = mqttPublish('delete_schedule', { index });
+    if (success) {
+        showToast('Se trimite cererea de ștergere...');
     }
 }
 
 function renderSchedules(schedules) {
     const list = document.getElementById('schedule-list');
-    if (!schedules.length) {
+    if (!schedules || !schedules.length) {
         list.innerHTML = '<div class="empty-state"><span class="empty-icon">⏰</span><p>Niciun program setat</p><p class="empty-hint">Adaugă ore la care să se hrănească automat</p></div>';
         return;
     }
@@ -279,28 +279,31 @@ function renderSchedules(schedules) {
     `).join('');
 }
 
-async function toggleSchedule(index) {
-    await apiPost('/api/schedule/toggle', { index });
-    fetchSchedules();
+function toggleSchedule(index) {
+    mqttPublish('toggle_schedule', { index });
 }
 
 // ─── History ───
 function renderHistory(history) {
     const list = document.getElementById('history-list');
-    if (!history.length) {
+    if (!history || !history.length) {
         list.innerHTML = '<div class="empty-state"><span class="empty-icon">📝</span><p>Nicio hrănire înregistrată</p></div>';
         return;
     }
     const methodLabels = { manual: 'Manual', scheduled: 'Programat', auto: 'Senzor IR' };
-    list.innerHTML = history.reverse().map(h => `
+    
+    // Sort reverse for UI (newest first)
+    const displayHistory = [...history].reverse();
+    
+    list.innerHTML = displayHistory.map(h => `
         <div class="history-item">
             <span class="history-time">${h.time}</span>
             <span class="history-method method-${h.method}">${methodLabels[h.method] || h.method}</span>
         </div>
     `).join('');
 
-    if (history.length > 0) {
-        document.getElementById('last-feed-text').textContent = 'Ultima: ' + history[0].time;
+    if (displayHistory.length > 0) {
+        document.getElementById('last-feed-text').textContent = 'Ultima: ' + displayHistory[0].time;
     }
 }
 
@@ -350,14 +353,13 @@ function closeModalById(id) {
 }
 
 function showSettings() {
-    const ip = prompt('IP ESP32 curent: ' + ESP_IP + '\n\nIntrodu un IP nou (sau lasă gol pentru a păstra):', ESP_IP);
-    if (ip && ip.trim()) {
-        ESP_IP = ip.trim();
-        localStorage.setItem('esp_ip', ESP_IP);
-        document.getElementById('device-ip').textContent = ESP_IP;
-        showToast('IP actualizat: ' + ESP_IP);
-        stopPolling();
-        startPolling();
+    const id = prompt('ID Dispozitiv curent: ' + DEVICE_ID + '\n\nIntrodu un ID nou (sau lasă gol pentru a păstra):', DEVICE_ID);
+    if (id && id.trim()) {
+        DEVICE_ID = id.trim();
+        localStorage.setItem('device_id', DEVICE_ID);
+        document.getElementById('device-ip').textContent = DEVICE_ID;
+        showToast('ID actualizat: ' + DEVICE_ID);
+        startMQTT();
     }
 }
 
