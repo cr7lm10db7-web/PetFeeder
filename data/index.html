@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>PetFeeder — Smart Dashboard</title>
+    <meta name="description" content="Control panel for your ESP32 Smart Pet Feeder">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐾</text></svg>">
+</head>
+<body>
+
+    <!-- ═══════════════════════════════════ -->
+    <!--  SETUP SCREEN (first time)          -->
+    <!-- ═══════════════════════════════════ -->
+    <div id="setup-screen" class="screen">
+        <div class="setup-container">
+            <div class="setup-icon">🐾</div>
+            <h1 class="setup-title">PetFeeder</h1>
+            <p class="setup-subtitle">Conectează-te la hrănitorul tău inteligent</p>
+            <div class="setup-form">
+                <label class="input-label" for="esp-ip">Adresa IP a plăcuței ESP32</label>
+                <input type="text" id="esp-ip" class="apple-input" placeholder="ex: 192.168.1.100" autocomplete="off">
+                <p class="setup-hint">Găsești IP-ul în Serial Monitor din VS Code</p>
+                <button id="connect-btn" class="apple-btn apple-btn-primary apple-btn-large" onclick="connectToESP()">
+                    Conectează
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ -->
+    <!--  MAIN DASHBOARD                     -->
+    <!-- ═══════════════════════════════════ -->
+    <div id="dashboard" class="screen hidden">
+
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <span class="top-bar-icon">🐾</span>
+                <h1 class="top-bar-title">PetFeeder</h1>
+            </div>
+            <div class="top-bar-right">
+                <div id="connection-badge" class="badge badge-offline">
+                    <span class="badge-dot"></span>
+                    <span id="badge-text">Deconectat</span>
+                </div>
+                <button class="icon-btn" onclick="showSettings()" title="Setări">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="dashboard-content">
+
+            <!-- Pet Profile -->
+            <section class="pet-profile-card card">
+                <div class="pet-avatar" id="pet-avatar">🐱</div>
+                <div class="pet-info">
+                    <h2 class="pet-name" id="pet-name">Animalul meu</h2>
+                    <p class="pet-status" id="pet-status">Niciun status</p>
+                </div>
+                <button class="icon-btn edit-btn" onclick="editPetProfile()" title="Editează profil">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+            </section>
+
+            <!-- Feed Now — Hero Button -->
+            <section class="feed-section">
+                <button id="feed-btn" class="feed-button" onclick="feedNow()">
+                    <div class="feed-button-inner">
+                        <div class="feed-icon">🍽️</div>
+                        <div class="feed-text">
+                            <span class="feed-label">Hrănește Acum</span>
+                            <span class="feed-sublabel" id="last-feed-text">Nicio hrănire încă</span>
+                        </div>
+                    </div>
+                    <div class="feed-ripple"></div>
+                </button>
+            </section>
+
+            <!-- Status Cards Grid -->
+            <section class="cards-grid">
+
+                <!-- Food Level -->
+                <div class="card status-card">
+                    <div class="card-header">
+                        <span class="card-icon">📊</span>
+                        <span class="card-title">Nivel Mâncare</span>
+                    </div>
+                    <div class="food-level-container">
+                        <div class="food-level-bar">
+                            <div class="food-level-fill" id="food-level-fill" style="height: 75%"></div>
+                        </div>
+                        <div class="food-level-info">
+                            <span class="food-level-percent" id="food-level-percent">75%</span>
+                            <span class="food-level-label" id="food-level-label">Nivel bun</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Pet Detection -->
+                <div class="card status-card">
+                    <div class="card-header">
+                        <span class="card-icon">👁️</span>
+                        <span class="card-title">Detectare</span>
+                    </div>
+                    <div class="detection-status">
+                        <div class="detection-indicator" id="detection-indicator">
+                            <div class="detection-dot" id="detection-dot"></div>
+                        </div>
+                        <span class="detection-text" id="detection-text">Niciun animal detectat</span>
+                    </div>
+                </div>
+
+                <!-- Buzzer Control -->
+                <div class="card status-card">
+                    <div class="card-header">
+                        <span class="card-icon">🔔</span>
+                        <span class="card-title">Alertă Sonoră</span>
+                    </div>
+                    <div class="toggle-row">
+                        <span class="toggle-label" id="buzzer-label">Activat</span>
+                        <label class="apple-toggle">
+                            <input type="checkbox" id="buzzer-toggle" checked onchange="toggleBuzzer()">
+                            <span class="apple-toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Auto Feed from Sensor -->
+                <div class="card status-card">
+                    <div class="card-header">
+                        <span class="card-icon">🤖</span>
+                        <span class="card-title">Auto-Hrănire Senzor</span>
+                    </div>
+                    <div class="toggle-row">
+                        <span class="toggle-label" id="autofeed-label">Activat</span>
+                        <label class="apple-toggle">
+                            <input type="checkbox" id="autofeed-toggle" checked onchange="toggleAutoFeed()">
+                            <span class="apple-toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- LED Status -->
+                <div class="card status-card">
+                    <div class="card-header">
+                        <span class="card-icon">💡</span>
+                        <span class="card-title">LED-uri</span>
+                    </div>
+                    <div class="led-indicators">
+                        <div class="led-dot led-green" id="led-green" title="Verde"></div>
+                        <div class="led-dot led-yellow" id="led-yellow" title="Galben"></div>
+                        <div class="led-dot led-red" id="led-red" title="Roșu"></div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- Schedule -->
+            <section class="card schedule-card">
+                <div class="card-header">
+                    <span class="card-icon">📅</span>
+                    <span class="card-title">Program Hrănire</span>
+                    <button class="apple-btn apple-btn-small" onclick="addSchedule()">+ Adaugă</button>
+                </div>
+                <div id="schedule-list" class="schedule-list">
+                    <div class="empty-state">
+                        <span class="empty-icon">⏰</span>
+                        <p>Niciun program setat</p>
+                        <p class="empty-hint">Adaugă ore la care să se hrănească automat</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- History -->
+            <section class="card history-card">
+                <div class="card-header">
+                    <span class="card-icon">📋</span>
+                    <span class="card-title">Istoric Hrăniri</span>
+                </div>
+                <div id="history-list" class="history-list">
+                    <div class="empty-state">
+                        <span class="empty-icon">📝</span>
+                        <p>Nicio hrănire înregistrată</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Device Info -->
+            <section class="card device-card">
+                <div class="card-header">
+                    <span class="card-icon">📟</span>
+                    <span class="card-title">Dispozitiv</span>
+                </div>
+                <div class="device-info">
+                    <div class="device-row">
+                        <span>IP Adresă</span>
+                        <span id="device-ip">—</span>
+                    </div>
+                    <div class="device-row">
+                        <span>Uptime</span>
+                        <span id="device-uptime">—</span>
+                    </div>
+                    <div class="device-row">
+                        <span>Total Hrăniri</span>
+                        <span id="device-feed-count">0</span>
+                    </div>
+                    <div class="device-row">
+                        <span>Ora ESP32</span>
+                        <span id="device-time">—</span>
+                    </div>
+                </div>
+                <button class="apple-btn apple-btn-danger apple-btn-full" onclick="disconnect()">Deconectează</button>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- ═══════════════════════════════════ -->
+    <!--  MODALS                             -->
+    <!-- ═══════════════════════════════════ -->
+
+    <!-- Schedule Modal -->
+    <div id="schedule-modal" class="modal-overlay hidden" onclick="closeModal(event, 'schedule-modal')">
+        <div class="modal-card" onclick="event.stopPropagation()">
+            <h3 class="modal-title">Adaugă Program</h3>
+            <div class="modal-body">
+                <label class="input-label">Ora hrănirii</label>
+                <input type="time" id="schedule-time" class="apple-input" value="08:00">
+            </div>
+            <div class="modal-actions">
+                <button class="apple-btn" onclick="closeModalById('schedule-modal')">Anulează</button>
+                <button class="apple-btn apple-btn-primary" onclick="saveSchedule()">Salvează</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pet Profile Modal -->
+    <div id="pet-modal" class="modal-overlay hidden" onclick="closeModal(event, 'pet-modal')">
+        <div class="modal-card" onclick="event.stopPropagation()">
+            <h3 class="modal-title">Profil Animal</h3>
+            <div class="modal-body">
+                <label class="input-label">Numele animalului</label>
+                <input type="text" id="pet-name-input" class="apple-input" placeholder="ex: Max">
+                <label class="input-label" style="margin-top:16px">Emoji avatar</label>
+                <div class="emoji-picker">
+                    <button class="emoji-option" onclick="selectEmoji('🐱')">🐱</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐶')">🐶</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐰')">🐰</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐹')">🐹</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐦')">🐦</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐢')">🐢</button>
+                    <button class="emoji-option" onclick="selectEmoji('🐠')">🐠</button>
+                    <button class="emoji-option" onclick="selectEmoji('🦎')">🦎</button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="apple-btn" onclick="closeModalById('pet-modal')">Anulează</button>
+                <button class="apple-btn apple-btn-primary" onclick="savePetProfile()">Salvează</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-text"></span>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
