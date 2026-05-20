@@ -6,6 +6,7 @@
 #include <time.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <WiFiManager.h>
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 // ══════════════════════════════════════════════════
@@ -19,12 +20,6 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 #define LED_GREEN 25
 #define LED_YELLOW 33
 #define LED_RED 32
-
-// ══════════════════════════════════════════════════
-//  📶 WIFI — PUNE DATELE TALE AICI!
-// ══════════════════════════════════════════════════
-const char *WIFI_SSID = "CSAB";
-const char *WIFI_PASS = "alinabotezat22";
 
 // ══════════════════════════════════════════════════
 //  ⚙️ CONSTANTE
@@ -393,6 +388,23 @@ void connectMQTT() {
   }
 }
 
+void configModeCallback(WiFiManager *myWiFiManager) {
+  Serial.println("Entered config mode");
+  Serial.println(WiFi.softAPIP());
+  Serial.println(myWiFiManager->getConfigPortalSSID());
+  
+  // Turn yellow LED on to indicate config mode is active!
+  digitalWrite(LED_YELLOW, HIGH);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_RED, LOW);
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Conectare WiFi:");
+  lcd.setCursor(0, 1);
+  lcd.print("PetFeeder-Setup");
+}
+
 // ══════════════════════════════════════════════════
 //  🚀 SETUP
 // ══════════════════════════════════════════════════
@@ -425,14 +437,19 @@ void setup() {
   digitalWrite(LED_YELLOW, LOW);
   digitalWrite(LED_RED, LOW);
 
-  // ── Conectare WiFi ──
-  Serial.printf("📶 Connecting to %s", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // ── Conectare WiFi cu WiFiManager ──
+  WiFiManager wm;
+  wm.setAPCallback(configModeCallback);
+  wm.setConfigPortalTimeout(120); // 2 minute timeout pentru a evita blocarea
 
-  while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(LED_YELLOW, !digitalRead(LED_YELLOW));
-    delay(500);
-    Serial.print(".");
+  if (!wm.autoConnect("PetFeeder-Setup")) {
+    Serial.println("❌ Eșec conectare sau timeout. Repornire...");
+    lcd.clear();
+    lcd.print("Eroare WiFi");
+    lcd.setCursor(0, 1);
+    lcd.print("Restart...");
+    delay(3000);
+    ESP.restart();
   }
 
   digitalWrite(LED_YELLOW, LOW);
@@ -440,6 +457,8 @@ void setup() {
   Serial.println("\n✅ WiFi Connected!");
   Serial.print("🌐 IP: ");
   Serial.println(WiFi.localIP());
+  lcd.clear();
+  lcd.print("WiFi Conectat");
 
   // Beep de confirmare (Active-Low logic)
   if (buzzerEnabled) {
